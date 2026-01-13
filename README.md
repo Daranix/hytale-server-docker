@@ -63,7 +63,7 @@ services:
     build: .
     image: hytale-server:latest
     ports:
-      - "25565:25565"
+      - "5520:5520/udp"
     volumes:
       - ./data/server:/opt/hytale/server
       - ./data/tokens:/opt/hytale/tokens
