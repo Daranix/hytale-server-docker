@@ -5,15 +5,14 @@ services:
     build: .
     image: hytale-server:latest
     container_name: hytale-server
-    restart: unless-stopped
+    #restart: unless-stopped
     volumes:
-      - ./Server:/opt/hytale/server
+      - ./data/files:/opt/hytale/server
+      - ./data/auth:/opt/hytale/tokens
     environment:
       # Set to 1 to run the device code flow inside the container (you still must visit the verification URL)
       - HYTALE_AUTOMATE_DEVICE_FLOW=1
-      - HYTALE_CLIENT_ID=hytale-server
-      - HYTALE_SCOPE=openid offline auth:server
     ports:
-      - "5520:5520"
+      - "5520:5520/udp"
     tty: true
     stdin_open: true

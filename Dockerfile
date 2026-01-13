@@ -1,9 +1,12 @@
-FROM eclipse-temurin:25-jdk-alpine
+FROM eclipse-temurin:25-jdk
 
 ENV LANG=C.UTF-8 \
     HYTALE_DOWNLOADER_URL=https://downloader.hytale.com/hytale-downloader.zip
 
-RUN apk add --no-cache curl unzip bash jq ca-certificates \
+# Install required tools on Debian-based image so native glibc loader is available
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl unzip bash jq ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /opt/hytale /usr/local/bin
 
 WORKDIR /opt/hytale

@@ -9,13 +9,49 @@ set -euo pipefail
 # - Finally attempt to start a server binary from the mounted /opt/hytale/server directory.
 
 DEFAULT_CLIENT_ID="hytale-server"
-CLIENT_ID="${HYTALE_CLIENT_ID:-$DEFAULT_CLIENT_ID}"
-SCOPE="${HYTALE_SCOPE:-openid offline auth:server}"
+CLIENT_ID="hytale-server"
+SCOPE="openid offline auth:server"
 SERVER_DIR="/opt/hytale/server"
+TOKEN_DIR="/opt/hytale/tokens"
+CRED_FILE="$TOKEN_DIR/.hytale-downloader-credentials.json"
+
+# Defaults to avoid unbound variable errors when running with `set -u`
+HYTALE_PATCHLINE="${HYTALE_PATCHLINE:-release}"
+DOWNLOADER_BIN="${DOWNLOADER_BIN:-/opt/hytale/downloader/hytale-downloader-linux-amd64}"
+# Allow externally provided session tokens or default to empty
+HYTALE_SERVER_SESSION_TOKEN="${HYTALE_SERVER_SESSION_TOKEN:-}"
+HYTALE_SERVER_IDENTITY_TOKEN="${HYTALE_SERVER_IDENTITY_TOKEN:-}"
 
 log() { echo "[entrypoint] $*"; }
 
+# Decide whether to run device flow: only when automation is enabled and
+# credentials file is missing or expired.
+DO_DEVICE_FLOW=0
 if [ "${HYTALE_AUTOMATE_DEVICE_FLOW:-0}" = "1" ]; then
+  if [ ! -f "$CRED_FILE" ]; then
+    log "No downloader credentials found; device flow will run."
+    DO_DEVICE_FLOW=1
+  else
+    # attempt to read expires_at from credentials; treat parse failures as expired
+    expires_at=0
+    if expires_at=$(jq -r '.expires_at // 0' "$CRED_FILE" 2>/dev/null); then
+      : # parsed
+    else
+      expires_at=0
+    fi
+    now=$(date +%s)
+    if [ "$expires_at" -le "$now" ]; then
+      log "Downloader credentials expired (expires_at=$expires_at); device flow will run."
+      DO_DEVICE_FLOW=1
+    else
+      log "Found valid downloader credentials (expires_at=$expires_at); skipping device flow."
+    fi
+  fi
+else
+  log "HYTALE_AUTOMATE_DEVICE_FLOW not enabled; skipping device code flow."
+fi
+
+if [ "$DO_DEVICE_FLOW" = "1" ]; then
   log "Starting device code flow (METHOD B) to obtain OAuth tokens..."
 
   resp=$(curl -s -X POST "https://oauth.accounts.hytale.com/oauth2/device/auth" \
@@ -27,7 +63,7 @@ if [ "${HYTALE_AUTOMATE_DEVICE_FLOW:-0}" = "1" ]; then
   user_code=$(echo "$resp" | jq -r .user_code)
   verification_uri=$(echo "$resp" | jq -r .verification_uri)
   verification_uri_complete=$(echo "$resp" | jq -r .verification_uri_complete)
-  interval=$(echo "$resp" | jq -r .interval // 5)
+  interval=$(echo "$resp" | jq -r '.interval // 5')
 
   if [ -z "$device_code" ] || [ "$device_code" = "null" ]; then
     echo "Failed to request device code: $resp"
@@ -72,9 +108,12 @@ EOF
       refresh_token=$(echo "$token_resp" | jq -r .refresh_token)
       expires_in=$(echo "$token_resp" | jq -r .expires_in)
 
-      mkdir -p "$SERVER_DIR"
-      jq -n --arg at "$access_token" --arg rt "$refresh_token" --argjson exp "$expires_in" '{access_token:$at,refresh_token:$rt,expires_in:$exp}' > "$SERVER_DIR/oauth_tokens.json"
-      log "OAuth tokens saved to $SERVER_DIR/oauth_tokens.json"
+      mkdir -p "$TOKEN_DIR"
+      now=$(date +%s)
+      expires_at=$((now + (expires_in + 0)))
+
+      jq -n --arg at "$access_token" --arg rt "$refresh_token" --argjson exp "$expires_at" --arg br "$HYTALE_PATCHLINE" '{access_token:$at,refresh_token:$rt,expires_at:$exp,branch:$br}' > "$TOKEN_DIR/.hytale-downloader-credentials.json"
+      log "OAuth tokens saved to $TOKEN_DIR/.hytale-downloader-credentials.json"
       break
     fi
   done
@@ -102,28 +141,60 @@ EOF
     exit 1
   fi
 
-  jq -n --arg st "$session_token" --arg it "$identity_token" '{sessionToken:$st,identityToken:$it}' > "$SERVER_DIR/session_tokens.json"
+  jq -n --arg st "$session_token" --arg it "$identity_token" '{sessionToken:$st,identityToken:$it}' > "$TOKEN_DIR/session_tokens.json"
   log "Session tokens saved to $SERVER_DIR/session_tokens.json"
-
-  # Export for this process
-  export HYTALE_SERVER_SESSION_TOKEN="$session_token"
-  export HYTALE_SERVER_IDENTITY_TOKEN="$identity_token"
 
 else
   log "HYTALE_AUTOMATE_DEVICE_FLOW not enabled; skipping device code flow."
 fi
 
 # Start server binary from the mounted server directory
-cd "$SERVER_DIR" || true
 
-if [ -x "$SERVER_DIR/HytaleServer.aot" ]; then
-  log "Starting HytaleServer.aot"
-  exec "$SERVER_DIR/HytaleServer.aot"
-elif ls "$SERVER_DIR"/*.jar >/dev/null 2>&1; then
-  jarfile=$(ls "$SERVER_DIR"/*.jar | head -n1)
-  log "Starting Java server $jarfile"
-  exec java -jar "$jarfile"
+# Check if SKIP_UPDATE_CHECK is set to 0, otherwise skip update check
+if [ "${HYTALE_SKIP_UPDATE_CHECK:-0}" = "1" ]; then
+  log "Skipping update check."
 else
-  echo "No server binary found in $SERVER_DIR. Place HytaleServer.aot or HytaleServer.jar into the mounted Server directory and restart the container."
-  exec /bin/bash
+  log "Checking for game updates..."
+  # If explicit skip
+  if [ "${HYTALE_SKIP_UPDATE_CHECK:-0}" = "1" ]; then
+    log "Skipping update check."
+    return 0
+  fi
+
+  if [ ! -f "$TOKEN_DIR/.hytale-downloader-credentials.json" ]; then
+    log "Warning: $TOKEN_DIR/.hytale-downloader-credentials.json missing. Downloader might fail."
+  fi
+
+  "$DOWNLOADER_BIN" \
+    -credentials-path "$TOKEN_DIR/.hytale-downloader-credentials.json" \
+    -download-path "$SERVER_DIR/game.zip" \
+    -patchline "$HYTALE_PATCHLINE"
+
+  if [ -f "$SERVER_DIR/game.zip" ]; then
+    log "Unzipping game..."
+    unzip -o -q "$SERVER_DIR/game.zip" -d "$SERVER_DIR"
+    rm "$SERVER_DIR/game.zip"
+  fi
 fi
+
+
+
+# Read from $TOKEN_DIR/session_tokens.json
+session_token=$(jq -r '.sessionToken' "$TOKEN_DIR/session_tokens.json")
+identity_token=$(jq -r '.identityToken' "$TOKEN_DIR/session_tokens.json")
+
+if [ -z "$session_token" ] || [ "$session_token" = "null" ]; then
+  echo "Failed to read session token from $TOKEN_DIR/session_tokens.json"
+  exit 1
+fi
+
+export HYTALE_SERVER_SESSION_TOKEN="$session_token"
+export HYTALE_SERVER_IDENTITY_TOKEN="$identity_token"
+
+log "Starting Hytale Server..."
+cd "$SERVER_DIR"
+exec java -jar Server/HytaleServer.jar \
+  --session-token "$HYTALE_SERVER_SESSION_TOKEN" \
+  --identity-token "$HYTALE_SERVER_IDENTITY_TOKEN" \
+  --assets Assets.zip
+  ${HYTALE_SERVER_ADDITIONAL_ARGS:-}
