@@ -38,7 +38,7 @@ docker run --rm -it \
   -v "$(pwd)/data/tokens:/opt/hytale/tokens" \
   -e HYTALE_AUTOMATE_DEVICE_FLOW=1 \
   -e HYTALE_PATCHLINE=release \
-  hytale-server:latest
+  ghcr.io/daranix/hytale-server-docker:1.0.0
 ```
 
 3) Run headless with pre-provisioned tokens (example):
