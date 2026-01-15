@@ -57,11 +57,8 @@ docker run --rm -d \
 Use the provided `docker-compose.example.yaml` as a starting point. Basic example:
 
 ```yaml
-version: '3.8'
 services:
-  hytale:
-    build: .
-    image: hytale-server:latest
+    image: ghcr.io/daranix/hytale-server-docker:1.0.0
     ports:
       - "5520:5520/udp"
     volumes:
