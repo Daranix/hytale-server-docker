@@ -50,7 +50,7 @@ docker run --rm -d \
   -v "$(pwd)/data/server:/opt/hytale/server" \
   -v "$(pwd)/data/tokens:/opt/hytale/tokens" \
   -e HYTALE_PATCHLINE=release \
-  hytale-server:latest
+  ghcr.io/daranix/hytale-server-docker:1.0.0
 ```
 
 **Example — docker compose**
